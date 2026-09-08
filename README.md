@@ -11,14 +11,16 @@ This approach is nice, in my opinion, as you don't have to learn a specialised p
 
 ## Installation
 
+blackjax-utils isn't on PyPI, so install it from GitHub:
+
 ```bash
-pip install blackjax-utils
+pip install git+https://github.com/teddygroves/blackjax-utils.git
 ```
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add blackjax-utils
+uv add git+https://github.com/teddygroves/blackjax-utils.git
 ```
 
 ## Quick start
@@ -105,8 +107,8 @@ run_nuts(
 Clone and install with dev dependencies:
 
 ```bash
-git clone https://github.com/teddygroves/blackjax_utils.git
-cd blackjax_utils
+git clone https://github.com/teddygroves/blackjax-utils.git
+cd blackjax-utils
 uv sync
 ```
 
