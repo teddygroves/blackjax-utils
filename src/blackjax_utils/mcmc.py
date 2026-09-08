@@ -86,11 +86,20 @@ def run_chain(
     This function runs the full MCMC workflow for a single chain: warmup
     (window adaptation) followed by NUTS sampling.
 
+    Kernel parameters that appear in ``warmup_kwargs`` but not in
+    ``sample_kwargs`` apply to warmup only: they are stripped from the tuned
+    parameters before sampling, so sampling falls back to the blackjax default.
+
     Args:
         key: A JAX PRNG key.
         init_params: Initial parameter values.
         target_density: The log-density function to sample from.
         warmup_kwargs: Additional arguments passed to `blackjax.window_adaptation`.
+            As well as kernel parameters such as ``max_num_doublings``, this may
+            contain warmup-only arguments that `blackjax.nuts` does not accept:
+            ``initial_step_size``, ``target_acceptance_rate``,
+            ``is_mass_matrix_diagonal``, ``initial_inverse_mass_matrix``,
+            ``imm_shrinkage_to_previous`` and ``adaptation_info_fn``.
         n_warmup: Number of warmup (adaptation) steps.
         n_sample: Number of sampling steps.
         **sample_kwargs: Static parameters passed to the NUTS kernel during
@@ -111,6 +120,8 @@ def run_chain(
         init_params,
         n_warmup,  # type: ignore
     )
+    warmup_only = set(warmup_kwargs) - set(sample_kwargs)
+    tuned_params = {k: v for k, v in tuned_params.items() if k not in warmup_only}
     sample_loop = partial(
         inference_loop,
         num_samples=n_sample,
@@ -130,6 +141,7 @@ def run_nuts(
     n_sample: int = 500,
     chain_map: Callable = jax.vmap,
     sampling_options: dict[str, Any] | None = None,
+    warmup_options: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> tuple[PyTree, PyTree]:
     """Run NUTS sampling with parallelization across multiple chains.
@@ -155,24 +167,33 @@ def run_nuts(
             sharding control.
         sampling_options: Optional dictionary of keyword arguments forwarded
             to the NUTS kernel during sampling. When provided, these values
-            override the corresponding ``**kwargs`` for the sampling stage
-            only. Warmup still uses the original ``**kwargs`` values.
+            are added to, and override, the corresponding ``**kwargs`` for the
+            sampling stage only. Warmup still uses the original ``**kwargs``
+            values.
+        warmup_options: Optional dictionary of keyword arguments forwarded to
+            ``blackjax.window_adaptation`` during warmup. When provided, these
+            values are added to, and override, the corresponding ``**kwargs``
+            for the warmup stage only. Sampling still uses the original
+            ``**kwargs`` values.
+
+            This is the only way to set arguments that ``window_adaptation``
+            accepts but ``blackjax.nuts`` rejects, since ``**kwargs`` values
+            reach both stages. Those arguments are ``initial_step_size``,
+            ``target_acceptance_rate``, ``is_mass_matrix_diagonal``,
+            ``initial_inverse_mass_matrix``, ``imm_shrinkage_to_previous`` and
+            ``adaptation_info_fn``.
         **kwargs: Additional keyword arguments forwarded to both
             ``blackjax.window_adaptation`` (warmup) and the NUTS kernel
-            (sampling). Use ``sampling_options`` to override sampling-specific
-            values.
+            (sampling). Use ``warmup_options`` or ``sampling_options`` to set
+            or override stage-specific values.
 
     Returns:
         A tuple containing (states, info) where:
         - states: Tree of posterior samples with shape (n_chain, n_sample, ...)
         - info: Dictionary with sampling diagnostics (e.g., divergence info)
     """
-    # All kwargs go to both warmup and sampling by default.
-    # sampling_options overrides kwargs for the sampling stage only.
-    warmup_kwargs: dict[str, Any] = dict(kwargs)
-    sample_kwargs: dict[str, Any] = dict(kwargs)
-    if sampling_options is not None:
-        sample_kwargs.update(sampling_options)
+    warmup_kwargs: dict[str, Any] = {**kwargs, **(warmup_options or {})}
+    sample_kwargs: dict[str, Any] = {**kwargs, **(sampling_options or {})}
 
     key1, key2 = jax.random.split(key)
     init_keys = jax.random.split(key1, n_chain)

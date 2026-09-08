@@ -92,15 +92,32 @@ states, info = run_nuts(..., n_chain=2, chain_map=chain_map)
 ### Passing warmup and sampling kwargs
 
 By default, `**kwargs` are forwarded to both warmup and sampling. Use
-`sampling_options` to override values for the sampling stage only:
+`warmup_options` and `sampling_options` to set or override values for a single
+stage:
 
 ```python
 run_nuts(
     ...,
     max_num_doublings=10,                          # goes to both warmup and sampling
-    sampling_options=dict(max_num_doublings=5),    # overrides sampling only
+    warmup_options=dict(initial_step_size=0.1),    # warmup only
+    sampling_options=dict(max_num_doublings=5),    # sampling only
 )
 ```
+
+`warmup_options` is the only way to reach arguments that
+[`blackjax.window_adaptation`](https://blackjax-devs.github.io/blackjax/autoapi/blackjax/adaptation/window_adaptation/index.html)
+accepts but `blackjax.nuts` rejects, since a plain `**kwargs` value is sent to
+both stages and the NUTS kernel would raise `TypeError`. These are:
+
+- `initial_step_size`
+- `target_acceptance_rate`
+- `is_mass_matrix_diagonal`
+- `initial_inverse_mass_matrix`
+- `imm_shrinkage_to_previous`
+- `adaptation_info_fn`
+
+Kernel parameters given only to warmup stay there: `warmup_options=dict(max_num_doublings=1)`
+leaves sampling on the blackjax default rather than carrying the value over.
 
 ## Development
 
