@@ -119,6 +119,108 @@ both stages and the NUTS kernel would raise `TypeError`. These are:
 Kernel parameters given only to warmup stay there: `warmup_options=dict(max_num_doublings=1)`
 leaves sampling on the blackjax default rather than carrying the value over.
 
+## Performance
+
+blackjax-utils follows the
+[blackjax speed-up guide](https://blackjax-devs.github.io/blackjax/examples/speed_up_guide.html).
+What it does for you:
+
+- **One `jax.jit` per chain**, wrapping warmup and sampling together, placed
+  inside `chain_map` so it composes correctly with `vmap`, `pmap` and
+  `shard_map`.
+- **`jax.lax.scan`** for the sampling loop, with the NUTS kernel built once
+  outside it.
+- **A flat position.** `run_nuts` ravels your position PyTree into a single 1-D
+  array before it reaches blackjax and restores your structure in the returned
+  samples, so a dict of parameters does not become one buffer per leaf in the
+  scan carry.
+- **Chain parallelism** via `chain_map` (see above).
+
+Measured on one CPU device with an 8-leaf dict position (40 dimensions),
+4 chains, 500 warmup and 500 sampling steps (median of the runs reported by
+`tests/test_benchmarks.py`, see [Benchmarks](#benchmarks)):
+
+| | position | median per call |
+| --- | --- | --- |
+| `run_nuts(flatten=False)` | PyTree | 1431ms |
+| `run_nuts()` | flat | 696ms |
+| `make_nuts_runner()` (`flatten=False`) | PyTree | 102ms |
+| `make_nuts_runner()` | flat | **64ms** |
+
+`run_nuts` recompiles on every call, so its figures include compilation;
+`make_nuts_runner` compiles once, so its figures are steady-state sampling
+cost. Flattening is worth ~1.6x on its own and reusing the compiled sampler a
+further ~10x.
+
+### Sampling repeatedly
+
+`run_nuts` builds a fresh `jax.jit` on each call, so its compilation cache is
+always empty and calling it in a loop recompiles every time. To sample the same
+model more than once, build the sampler once with `make_nuts_runner`:
+
+```python
+from blackjax_utils import make_nuts_runner
+
+sample = make_nuts_runner(log_density, n_chain=4, n_warmup=500, n_sample=1000)
+
+for key in jax.random.split(jax.random.PRNGKey(0), 10):
+    states, info = sample(key, init_params, 1.0)   # compiles once, not ten times
+```
+
+It takes the same arguments as `run_nuts` apart from `key`, `init_params` and
+`init_sd`, which move to the returned callable. Recompilation still happens if
+the shape or dtype of `init_params` changes.
+
+### Flattening caveats
+
+Pass `flatten=False` to keep your PyTree as the sampler position. Two reasons
+you might need to:
+
+- Every leaf must have a floating-point dtype. Integer leaves raise `TypeError`
+  rather than being silently rounded on the way back out.
+- Flattening is algebraically but not always bitwise identical to sampling the
+  PyTree directly, because XLA reassociates float operations differently on a
+  single array. Differences start at float rounding level (order 1e-7 in
+  float32) and could compound on an ill-conditioned target, so a fixed seed is
+  not guaranteed to reproduce `flatten=False` numbers exactly.
+
+Flattening is a no-op when the position is already a single array, and gains
+little for two or three scalar leaves; it matters most for many leaves or large
+arrays.
+
+### Other tips from the guide
+
+- On GPU, prefer `float32` (the JAX default -- leave `jax_enable_x64` off) and
+  run more chains rather than fewer, since a single chain rarely saturates a
+  GPU.
+- Under `vmap`, NUTS trajectory expansion is a `lax.while_loop`, so all chains
+  run in lockstep to the longest trajectory in the batch. With several devices
+  available, `chain_map=jax.pmap` avoids that coupling.
+- To profile, set `JAX_TRACE_DIR` and run the trace test, then open the result
+  in [Perfetto](https://ui.perfetto.dev) or TensorBoard:
+
+  ```bash
+  JAX_TRACE_DIR=/tmp/jax-trace uv run pytest tests/test_benchmarks.py::test_write_jax_profile
+  tensorboard --logdir /tmp/jax-trace
+  ```
+
+### Benchmarks
+
+`tests/test_benchmarks.py` uses
+[pytest-benchmark](https://pytest-benchmark.readthedocs.io/). Timings are
+disabled by default, so a normal test run executes each benchmark body once as
+a smoke test and reports nothing. To measure:
+
+```bash
+uv run pytest tests/test_benchmarks.py --benchmark-enable
+```
+
+Vary the problem size with environment variables, e.g.:
+
+```bash
+BENCH_N_LEAVES=16 BENCH_N_CHAIN=8 uv run pytest tests/test_benchmarks.py --benchmark-enable
+```
+
 ## Development
 
 Clone and install with dev dependencies:

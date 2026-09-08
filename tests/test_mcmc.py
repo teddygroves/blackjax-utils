@@ -1,11 +1,35 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from blackjax_utils.mcmc import get_init_params, run_chain, run_nuts
+from blackjax_utils.mcmc import (
+    _flatten_position,
+    get_init_params,
+    make_nuts_runner,
+    run_chain,
+    run_nuts,
+)
 
 
 def log_density_fn(params):
     return -0.5 * jnp.sum(params["x"] ** 2)
+
+
+# A multi-leaf target whose leaves have different locations and scales, so a
+# wrong ravel/unravel permutation shows up as leaves recovering each other's
+# moments rather than their own.
+MULTILEAF_TARGET = {"a": (0.0, 1.0), "b": (5.0, 0.5), "c": (-3.0, 2.0)}
+MULTILEAF_INIT = {
+    "a": jnp.zeros(2),
+    "b": jnp.full((3,), 5.0),
+    "c": jnp.zeros(()),
+}
+
+
+def log_density_multileaf(params):
+    return sum(
+        -0.5 * jnp.sum(((params[name] - mu) / sd) ** 2)
+        for name, (mu, sd) in MULTILEAF_TARGET.items()
+    )
 
 
 def _make_shard_chain_map(n_chain: int):
@@ -73,7 +97,8 @@ def test_get_init_params_jitter():
     assert params_jitter["x"].shape == base_params["x"].shape
 
 
-def test_run_nuts_vmap():
+@pytest.mark.parametrize("flatten", [True, False])
+def test_run_nuts_vmap(flatten):
     """Explicit vmap chain mapping (the default)."""
     key = jax.random.PRNGKey(2)
     init_params = {"x": jnp.array([10.0])}
@@ -88,6 +113,7 @@ def test_run_nuts_vmap():
         n_sample=500,
         chain_map=jax.vmap,
         max_num_doublings=5,
+        flatten=flatten,
     )
 
     samples = states.position["x"]
@@ -98,7 +124,8 @@ def test_run_nuts_vmap():
     assert jnp.abs(std - 1.0) < 0.2
 
 
-def test_run_nuts_shard_map_single_device():
+@pytest.mark.parametrize("flatten", [True, False])
+def test_run_nuts_shard_map_single_device(flatten):
     """shard_map with a single device."""
     n_chain = 1
     key = jax.random.PRNGKey(3)
@@ -114,6 +141,7 @@ def test_run_nuts_shard_map_single_device():
         n_sample=500,
         chain_map=_make_shard_chain_map(n_chain),
         max_num_doublings=5,
+        flatten=flatten,
     )
 
     samples = states.position["x"]
@@ -290,6 +318,156 @@ def test_run_chain_strips_warmup_only_kwargs():
 
     assert states.position["x"].shape == (100, 1)
     assert jnp.max(info.num_integration_steps) > 2
+
+
+# ---------------------------------------------------------------------------
+# Position flattening
+# ---------------------------------------------------------------------------
+
+
+def test_flatten_position_round_trip():
+    """Ravelling and unravelling a heterogeneous PyTree is lossless."""
+    tree = {"a": jnp.zeros(()), "b": jnp.arange(2.0), "c": jnp.ones((3, 4))}
+
+    flat, unflatten = _flatten_position(tree)
+
+    assert flat.shape == (1 + 2 + 12,)
+    restored = unflatten(flat)
+    assert jax.tree.structure(restored) == jax.tree.structure(tree)
+    for name, leaf in tree.items():
+        assert restored[name].shape == leaf.shape
+        assert restored[name].dtype == leaf.dtype
+        assert jnp.array_equal(restored[name], leaf)
+
+
+def test_flatten_position_rejects_integer_leaves():
+    """Integer leaves are refused rather than silently truncated.
+
+    ravel_pytree would promote the leaf to float for the flat array and then
+    cast it back on the way out, rounding samples to integers.
+    """
+    with pytest.raises(TypeError, match="floating-point"):
+        _flatten_position({"n": jnp.arange(3)})
+
+    with pytest.raises(TypeError, match="floating-point"):
+        run_chain(
+            key=jax.random.PRNGKey(0),
+            init_params={"n": jnp.arange(3)},
+            target_density=lambda p: -0.5 * jnp.sum(p["n"] ** 2),
+            warmup_kwargs={},
+            n_warmup=10,
+            n_sample=10,
+        )
+
+
+def test_run_nuts_multileaf_dict():
+    """A multi-leaf position round-trips through flattening correctly."""
+    states, info = run_nuts(
+        key=jax.random.PRNGKey(5),
+        log_posterior=log_density_multileaf,
+        init_params=MULTILEAF_INIT,
+        init_sd=0.5,
+        n_chain=2,
+        n_warmup=400,
+        n_sample=1000,
+    )
+
+    # Structure is the caller's, not the flat array blackjax actually sampled.
+    assert jax.tree.structure(states.position) == jax.tree.structure(MULTILEAF_INIT)
+    assert jax.tree.structure(info.momentum) == jax.tree.structure(MULTILEAF_INIT)
+    assert jax.tree.structure(
+        info.trajectory_leftmost_state.position
+    ) == jax.tree.structure(MULTILEAF_INIT)
+
+    for name, (mu, sd) in MULTILEAF_TARGET.items():
+        samples = states.position[name]
+        assert samples.shape == (2, 1000, *MULTILEAF_INIT[name].shape)
+        assert jnp.abs(jnp.mean(samples) - mu) < 0.25
+        assert jnp.abs(jnp.std(samples) - sd) < 0.25
+
+
+def test_run_nuts_flatten_opt_out_matches_moments():
+    """flatten=True and flatten=False sample the same distribution."""
+    common = dict(
+        key=jax.random.PRNGKey(6),
+        log_posterior=log_density_multileaf,
+        init_params=MULTILEAF_INIT,
+        init_sd=0.5,
+        n_chain=2,
+        n_warmup=400,
+        n_sample=1000,
+    )
+
+    flat_states, _ = run_nuts(**common, flatten=True)
+    tree_states, _ = run_nuts(**common, flatten=False)
+
+    assert jax.tree.structure(flat_states.position) == jax.tree.structure(
+        tree_states.position
+    )
+    # Compare moments, not raw draws: the two paths are algebraically but not
+    # bitwise identical (XLA reassociates float ops differently on a flat
+    # array), so do not tighten this to allclose on the samples themselves.
+    for name in MULTILEAF_TARGET:
+        flat_samples = flat_states.position[name]
+        tree_samples = tree_states.position[name]
+        assert flat_samples.shape == tree_samples.shape
+        assert jnp.abs(jnp.mean(flat_samples) - jnp.mean(tree_samples)) < 0.3
+        assert jnp.abs(jnp.std(flat_samples) - jnp.std(tree_samples)) < 0.3
+
+
+def test_run_chain_flatten_and_unflatten():
+    """run_chain flattens on the un-vmapped, un-jitted path too."""
+    states, info = run_chain(
+        key=jax.random.PRNGKey(8),
+        init_params=MULTILEAF_INIT,
+        target_density=log_density_multileaf,
+        warmup_kwargs={},
+        n_warmup=200,
+        n_sample=200,
+    )
+
+    assert jax.tree.structure(states.position) == jax.tree.structure(MULTILEAF_INIT)
+    for name, leaf in MULTILEAF_INIT.items():
+        assert states.position[name].shape == (200, *leaf.shape)
+        assert info.momentum[name].shape == (200, *leaf.shape)
+
+
+# ---------------------------------------------------------------------------
+# Reusable runner
+# ---------------------------------------------------------------------------
+
+
+def test_make_nuts_runner_matches_run_nuts():
+    """The factory is the same computation run_nuts performs."""
+    key = jax.random.PRNGKey(6)
+    common = dict(n_chain=2, n_warmup=400, n_sample=1000)
+
+    expected, _ = run_nuts(
+        key=key,
+        log_posterior=log_density_multileaf,
+        init_params=MULTILEAF_INIT,
+        init_sd=0.5,
+        **common,
+    )
+    sample = make_nuts_runner(log_density_multileaf, **common)
+    actual, _ = sample(key, MULTILEAF_INIT, 0.5)
+
+    for name in MULTILEAF_TARGET:
+        assert jnp.array_equal(actual.position[name], expected.position[name])
+
+
+def test_make_nuts_runner_is_reusable():
+    """Repeated calls work and are deterministic in the key."""
+    sample = make_nuts_runner(log_density_fn, n_chain=1, n_warmup=100, n_sample=100)
+    init_params = {"x": jnp.array([1.0])}
+
+    first, _ = sample(jax.random.PRNGKey(20), init_params, 0.1)
+    again, _ = sample(jax.random.PRNGKey(20), init_params, 0.1)
+    other, _ = sample(jax.random.PRNGKey(21), init_params, 0.1)
+
+    assert first.position["x"].shape == (1, 100, 1)
+    assert jnp.array_equal(first.position["x"], again.position["x"])
+    assert not jnp.array_equal(first.position["x"], other.position["x"])
 
 
 # ---------------------------------------------------------------------------

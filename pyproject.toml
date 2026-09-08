@@ -22,4 +22,11 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-benchmark>=5.3.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Benchmark bodies still run once each, so they cannot rot, but no timings are
+# collected. Measure with: pytest tests/test_benchmarks.py --benchmark-enable
+addopts = "--benchmark-disable"
