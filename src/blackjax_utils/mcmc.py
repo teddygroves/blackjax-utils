@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import blackjax
 import jax
@@ -127,12 +127,41 @@ def _unflatten_info(info: Any, unflatten_draws: Callable) -> Any:
     )
 
 
+class Sampler(NamedTuple):
+    """How to build a sampler's warmup and its sampling step.
+
+    ``make_warmup(density, **warmup_kwargs)`` returns an object with
+    ``.run(key, position, num_steps)`` yielding ``((state, tuned_params),
+    info)``. ``make_kernel(density, **params)`` receives the tuned and static
+    parameters merged, and returns ``step(key, state)`` yielding ``(state,
+    info)``.
+    """
+
+    make_warmup: Callable
+    make_kernel: Callable
+
+
+def nuts_warmup(density: Callable, **kwargs: Any) -> Any:
+    """Build a NUTS window adaptation."""
+    return blackjax.window_adaptation(blackjax.nuts, density, **kwargs)
+
+
+def nuts_kernel(density: Callable, **params: Any) -> Callable:
+    """Build a NUTS step function."""
+    return blackjax.nuts(density, **params).step
+
+
+NUTS = Sampler(nuts_warmup, nuts_kernel)
+
+
 def inference_loop(
     key: PRNGKeyArray,
     tuned_params: dict[str, Any],
     initial_state: PyTree,
     num_samples: int,
     log_posterior: Callable,
+    *,
+    make_kernel: Callable = nuts_kernel,
     **static_params: Any,
 ) -> tuple[PyTree, PyTree]:
     """Run a sampling loop.
@@ -143,6 +172,8 @@ def inference_loop(
         initial_state: Initial state for sampling from warmup.
         num_samples: Number of samples to draw.
         log_posterior: The log-probability density function of the target distribution.
+        make_kernel: Builds the step function from the density and the merged
+            parameters. See `run_sampler` for the contract.
         **static_params: Static algorithm parameters (e.g., max_num_doublings) that
             are not tuned during warmup.
 
@@ -159,7 +190,7 @@ def inference_loop(
     """
     # Merge static params with tuned params for the kernel
     all_params = {**tuned_params, **static_params}
-    kernel = blackjax.nuts(log_posterior, **all_params).step
+    kernel = make_kernel(log_posterior, **all_params)
 
     def one_step(
         state: Any, rng_key: PRNGKeyArray
@@ -182,6 +213,7 @@ def run_chain(
     n_sample: int,
     *,
     flatten: bool = True,
+    sampler: Sampler = NUTS,
     **sample_kwargs: Any,
 ) -> tuple[PyTree, PyTree]:
     """Run warmup and sampling for a single chain.
@@ -212,7 +244,9 @@ def run_chain(
         n_sample: Number of sampling steps.
         flatten: Whether to ravel the position into a single 1-D array before
             passing it to blackjax, restoring the original structure on the way
-            out. See `run_nuts` for the trade-offs.
+            out. See `run_sampler` for the trade-offs.
+        sampler: The ``(make_warmup, make_kernel)`` pair to run. See
+            `run_sampler`.
         **sample_kwargs: Static parameters passed to the NUTS kernel during
             sampling (e.g., max_num_doublings).
 
@@ -229,18 +263,15 @@ def run_chain(
     if flatten:
         initial_position, unflatten = _flatten_position(init_params)
 
-        def density(position: Any) -> Any:
-            return target_density(unflatten(position))
+        def density(position: Any, **kwargs: Any) -> Any:
+            return target_density(unflatten(position), **kwargs)
     else:
         initial_position, unflatten = init_params, None
         density = target_density
 
     warmup_key, sample_key = jax.random.split(key)
-    warmup = blackjax.window_adaptation(
-        blackjax.nuts,
-        density,
-        **warmup_kwargs,
-    )
+    make_warmup, make_kernel = sampler
+    warmup = make_warmup(density, **warmup_kwargs)
     (warmed_up_state, tuned_params), _ = warmup.run(
         warmup_key,
         initial_position,
@@ -256,6 +287,7 @@ def run_chain(
         warmed_up_state,
         num_samples=n_sample,
         log_posterior=density,
+        make_kernel=make_kernel,
         **sample_kwargs,
     )
     if unflatten is not None:
@@ -265,7 +297,7 @@ def run_chain(
     return states, info
 
 
-def make_nuts_runner(
+def make_sampler_runner(
     log_posterior: Callable,
     n_chain: int = 4,
     n_warmup: int = 500,
@@ -274,6 +306,7 @@ def make_nuts_runner(
     sampling_options: dict[str, Any] | None = None,
     warmup_options: dict[str, Any] | None = None,
     flatten: bool = True,
+    sampler: Sampler = NUTS,
     **kwargs: Any,
 ) -> Callable[..., tuple[PyTree, PyTree]]:
     """Build a reusable sampler whose compiled code is cached across calls.
@@ -322,6 +355,7 @@ def make_nuts_runner(
             n_warmup=n_warmup,
             n_sample=n_sample,
             flatten=flatten,
+            sampler=sampler,
             **sample_kwargs,
         )
     )
@@ -342,7 +376,7 @@ def make_nuts_runner(
     return sample
 
 
-def run_nuts(
+def run_sampler(
     key: PRNGKeyArray,
     log_posterior: Callable,
     init_params: PyTree,
@@ -354,6 +388,7 @@ def run_nuts(
     sampling_options: dict[str, Any] | None = None,
     warmup_options: dict[str, Any] | None = None,
     flatten: bool = True,
+    sampler: Sampler = NUTS,
     **kwargs: Any,
 ) -> tuple[PyTree, PyTree]:
     """Run NUTS sampling with parallelization across multiple chains.
@@ -403,6 +438,13 @@ def run_nuts(
             otherwise), and because flattening is only algebraically -- not
             bitwise -- equivalent, a given key produces different (equally
             valid) draws than ``flatten=False``.
+        sampler: A `Sampler`, i.e. a ``(make_warmup, make_kernel)`` pair,
+            defaulting to `NUTS`. This is how another sampler is plugged in.
+            Anything algorithm-specific that is not a per-step kernel parameter
+            must be bound into those two factories by the caller, never passed
+            through ``warmup_kwargs``: warmup echoes its extra arguments back
+            in ``tuned_params``, which then reach the kernel as per-step
+            parameters.
         **kwargs: Additional keyword arguments forwarded to both
             ``blackjax.window_adaptation`` (warmup) and the NUTS kernel
             (sampling). Use ``warmup_options`` or ``sampling_options`` to set
@@ -418,7 +460,7 @@ def run_nuts(
         calling this function in a loop recompiles every time. Use
         `make_nuts_runner` to sample repeatedly from the same model.
     """
-    runner = make_nuts_runner(
+    runner = make_sampler_runner(
         log_posterior,
         n_chain=n_chain,
         n_warmup=n_warmup,
@@ -427,6 +469,11 @@ def run_nuts(
         sampling_options=sampling_options,
         warmup_options=warmup_options,
         flatten=flatten,
+        sampler=sampler,
         **kwargs,
     )
     return runner(key, init_params, init_sd)
+
+
+run_nuts = run_sampler
+make_nuts_runner = make_sampler_runner

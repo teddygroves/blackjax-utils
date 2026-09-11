@@ -1,12 +1,22 @@
+from functools import partial
+from typing import Any, NamedTuple
+
+import blackjax
 import jax
 import jax.numpy as jnp
 import pytest
 from blackjax_utils.mcmc import (
     _flatten_position,
+    _unflatten_info,
+    _unflatten_state,
     get_init_params,
     make_nuts_runner,
     run_chain,
+    Sampler,
+    nuts_kernel,
+    nuts_warmup,
     run_nuts,
+    run_sampler,
 )
 
 
@@ -547,3 +557,190 @@ def test_run_nuts_shard_map_subset_devices():
     std = jnp.std(samples)
     assert jnp.abs(mean) < 0.2
     assert jnp.abs(std - 1.0) < 0.2
+
+
+def test_run_sampler_default_hooks_match_run_nuts():
+    """The default hooks reproduce the previous NUTS path exactly."""
+    key = jax.random.PRNGKey(7)
+    init_params = {"x": jnp.array([0.0])}
+    kwargs = dict(
+        log_posterior=log_density_fn,
+        init_params=init_params,
+        init_sd=1.0,
+        n_chain=2,
+        n_warmup=200,
+        n_sample=200,
+    )
+    expected, _ = run_nuts(key=key, **kwargs)
+    actual, _ = run_sampler(key=key, sampler=Sampler(nuts_warmup, nuts_kernel), **kwargs)
+    assert jnp.array_equal(actual.position["x"], expected.position["x"])
+
+
+class _ExtraFieldState(NamedTuple):
+    """A chain state shaped like grapevine's, with a solution-space field."""
+
+    position: Any
+    logdensity: Any
+    logdensity_grad: Any
+    guess: Any
+
+
+class _ExtraFieldIntegratorState(NamedTuple):
+    """An integrator state shaped like grapevine's."""
+
+    position: Any
+    momentum: Any
+    logdensity: Any
+    logdensity_grad: Any
+    guess: Any
+
+
+def test_unflatten_leaves_extra_state_fields_alone():
+    """Fields outside position space survive unflattening untouched.
+
+    Pins the contract an injected sampler relies on: a carried solution has
+    its own shape and must not be reshaped by the position unflattener.
+    """
+    template = {"a": jnp.zeros(2), "b": jnp.zeros(())}
+    _, unflatten = _flatten_position(template)
+    unflatten_draws = jax.vmap(unflatten)
+    n_draw = 4
+    flat = jnp.arange(n_draw * 3, dtype=float).reshape(n_draw, 3)
+    guess = jnp.ones((n_draw, 7))
+
+    state = _unflatten_state(
+        _ExtraFieldState(flat, jnp.zeros(n_draw), flat, guess),
+        unflatten_draws,
+    )
+
+    assert jax.tree.structure(state.position) == jax.tree.structure(template)
+    assert state.position["a"].shape == (n_draw, 2)
+    assert state.logdensity_grad["b"].shape == (n_draw,)
+    assert jnp.array_equal(state.guess, guess)
+
+
+def test_unflatten_info_leaves_extra_integrator_fields_alone():
+    """The same, for the integrator states carried inside ``NUTSInfo``."""
+    template = {"a": jnp.zeros(2), "b": jnp.zeros(())}
+    _, unflatten = _flatten_position(template)
+    unflatten_draws = jax.vmap(unflatten)
+    n_draw = 4
+    flat = jnp.arange(n_draw * 3, dtype=float).reshape(n_draw, 3)
+    guess = jnp.ones((n_draw, 7))
+    integrator_state = _ExtraFieldIntegratorState(
+        flat, flat, jnp.zeros(n_draw), flat, guess
+    )
+    info = blackjax.mcmc.nuts.NUTSInfo(
+        momentum=flat,
+        is_divergent=jnp.zeros(n_draw, dtype=bool),
+        is_turning=jnp.zeros(n_draw, dtype=bool),
+        energy=jnp.zeros(n_draw),
+        trajectory_leftmost_state=integrator_state,
+        trajectory_rightmost_state=integrator_state,
+        num_trajectory_expansions=jnp.zeros(n_draw, dtype=int),
+        num_integration_steps=jnp.zeros(n_draw, dtype=int),
+        acceptance_rate=jnp.zeros(n_draw),
+    )
+
+    out = _unflatten_info(info, unflatten_draws)
+
+    leftmost = out.trajectory_leftmost_state
+    assert jax.tree.structure(out.momentum) == jax.tree.structure(template)
+    assert jax.tree.structure(leftmost.position) == jax.tree.structure(template)
+    assert jnp.array_equal(leftmost.guess, guess)
+
+
+# A density in the shape an injected sampler expects: it takes its guess by
+# keyword and returns an aux alongside the log density.  The guess shifts the
+# target, so a run only recovers ``INJECTED_GUESS`` if the kwarg reaches here.
+INJECTED_GUESS = 5.0
+
+
+def aux_density(params, guess):
+    return -0.5 * jnp.sum((params["x"] - guess) ** 2), params["x"]
+
+
+def fake_warmup(density, *, guess, **kwargs):
+    return blackjax.window_adaptation(
+        blackjax.nuts, lambda p: density(p, guess=guess)[0], **kwargs
+    )
+
+
+def fake_kernel(density, *, guess, **params):
+    return blackjax.nuts(lambda p: density(p, guess=guess)[0], **params).step
+
+
+@pytest.mark.parametrize("flatten", [True, False])
+def test_injected_sampler_receives_density_kwargs(flatten):
+    """An injected sampler can call the target density with keywords."""
+    states, _ = run_sampler(
+        key=jax.random.PRNGKey(11),
+        log_posterior=aux_density,
+        init_params={"x": jnp.array([0.0])},
+        init_sd=1.0,
+        n_chain=2,
+        n_warmup=300,
+        n_sample=500,
+        flatten=flatten,
+        sampler=Sampler(
+            partial(fake_warmup, guess=INJECTED_GUESS),
+            partial(fake_kernel, guess=INJECTED_GUESS),
+        ),
+    )
+
+    samples = states.position["x"]
+    assert samples.shape == (2, 500, 1)
+    assert jnp.abs(jnp.mean(samples) - INJECTED_GUESS) < 0.2
+
+
+# A density with an embedded solve, in the shape grapevine assumes: the solver
+# converges to the same root whatever guess it starts from, so the target does
+# not depend on the guess even though the guess is threaded through it.
+FIXED_POINT_OBS = 0.7
+
+
+def _solve(a, guess):
+    def body(_, y):
+        return jnp.tanh(y * jax.nn.sigmoid(a) + 1.0)
+
+    return jax.lax.fori_loop(0, 50, body, guess)
+
+
+def solved_density(params, guess):
+    sol = _solve(params["x"], guess)
+    log_prior = -0.5 * jnp.sum(params["x"] ** 2)
+    log_likelihood = -2.0 * jnp.sum((FIXED_POINT_OBS - sol) ** 2)
+    return log_prior + log_likelihood, sol
+
+
+def test_grapenuts_matches_nuts():
+    """GrapeNUTS through the hooks samples the same target as NUTS."""
+    grapevine = pytest.importorskip("grapevine")
+    init_params = {"x": jnp.array([0.0])}
+    default_guess = jnp.array([0.01])
+    kwargs = dict(
+        init_params=init_params,
+        init_sd=0.1,
+        n_chain=2,
+        n_warmup=400,
+        n_sample=1000,
+    )
+    states, _ = run_sampler(
+        key=jax.random.PRNGKey(13),
+        log_posterior=solved_density,
+        sampler=grapevine.grapenuts(default_guess),
+        **kwargs,
+    )
+    expected, _ = run_nuts(
+        key=jax.random.PRNGKey(13),
+        log_posterior=lambda p: solved_density(p, default_guess)[0],
+        **kwargs,
+    )
+
+    samples = states.position["x"]
+    assert jax.tree.structure(states.position) == jax.tree.structure(
+        init_params
+    )
+    assert samples.shape == (2, 1000, 1)
+    assert jnp.abs(jnp.mean(samples) - jnp.mean(expected.position["x"])) < 0.15
+    assert jnp.abs(jnp.std(samples) - jnp.std(expected.position["x"])) < 0.15
