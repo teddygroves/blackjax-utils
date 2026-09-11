@@ -25,6 +25,9 @@ dev = [
     "pytest-benchmark>=5.3.0",
 ]
 
+[tool.ruff]
+line-length = 80
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Benchmark bodies still run once each, so they cannot rot, but no timings are

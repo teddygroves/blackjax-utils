@@ -249,12 +249,18 @@ def test_run_nuts_warmup_options_take_effect():
         n_sample=500,
     )
 
-    _, info_low = run_nuts(**common, warmup_options=dict(target_acceptance_rate=0.6))
-    _, info_high = run_nuts(**common, warmup_options=dict(target_acceptance_rate=0.95))
+    _, info_low = run_nuts(
+        **common, warmup_options=dict(target_acceptance_rate=0.6)
+    )
+    _, info_high = run_nuts(
+        **common, warmup_options=dict(target_acceptance_rate=0.95)
+    )
 
     # Dual averaging adapts the step size towards the requested acceptance
     # rate, so the higher target must yield the higher realised rate.
-    assert jnp.mean(info_high.acceptance_rate) > jnp.mean(info_low.acceptance_rate)
+    assert jnp.mean(info_high.acceptance_rate) > jnp.mean(
+        info_low.acceptance_rate
+    )
 
 
 def test_run_nuts_warmup_options_do_not_leak_into_sampling():
@@ -373,8 +379,12 @@ def test_run_nuts_multileaf_dict():
     )
 
     # Structure is the caller's, not the flat array blackjax actually sampled.
-    assert jax.tree.structure(states.position) == jax.tree.structure(MULTILEAF_INIT)
-    assert jax.tree.structure(info.momentum) == jax.tree.structure(MULTILEAF_INIT)
+    assert jax.tree.structure(states.position) == jax.tree.structure(
+        MULTILEAF_INIT
+    )
+    assert jax.tree.structure(info.momentum) == jax.tree.structure(
+        MULTILEAF_INIT
+    )
     assert jax.tree.structure(
         info.trajectory_leftmost_state.position
     ) == jax.tree.structure(MULTILEAF_INIT)
@@ -426,7 +436,9 @@ def test_run_chain_flatten_and_unflatten():
         n_sample=200,
     )
 
-    assert jax.tree.structure(states.position) == jax.tree.structure(MULTILEAF_INIT)
+    assert jax.tree.structure(states.position) == jax.tree.structure(
+        MULTILEAF_INIT
+    )
     for name, leaf in MULTILEAF_INIT.items():
         assert states.position[name].shape == (200, *leaf.shape)
         assert info.momentum[name].shape == (200, *leaf.shape)
@@ -458,7 +470,9 @@ def test_make_nuts_runner_matches_run_nuts():
 
 def test_make_nuts_runner_is_reusable():
     """Repeated calls work and are deterministic in the key."""
-    sample = make_nuts_runner(log_density_fn, n_chain=1, n_warmup=100, n_sample=100)
+    sample = make_nuts_runner(
+        log_density_fn, n_chain=1, n_warmup=100, n_sample=100
+    )
     init_params = {"x": jnp.array([1.0])}
 
     first, _ = sample(jax.random.PRNGKey(20), init_params, 0.1)

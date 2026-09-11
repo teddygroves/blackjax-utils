@@ -8,7 +8,9 @@ from jax.flatten_util import ravel_pytree
 from jaxtyping import PRNGKeyArray, PyTree
 
 
-def get_init_params(key: PRNGKeyArray, base: PyTree, sd: PyTree | None) -> PyTree:
+def get_init_params(
+    key: PRNGKeyArray, base: PyTree, sd: PyTree | None
+) -> PyTree:
     """Initialize parameters by adding jitter to a base value.
 
     Args:
@@ -22,14 +24,18 @@ def get_init_params(key: PRNGKeyArray, base: PyTree, sd: PyTree | None) -> PyTre
     """
 
     def jitter_leaf(key: PRNGKeyArray, base_leaf: Any, sd_leaf: Any) -> Any:
-        return base_leaf + jax.random.normal(key, shape=base_leaf.shape) * sd_leaf
+        return (
+            base_leaf + jax.random.normal(key, shape=base_leaf.shape) * sd_leaf
+        )
 
     flat_means, treedef = jax.tree.flatten(base)
     keys = jax.random.split(key, num=len(flat_means))
     keytree = jax.tree.unflatten(treedef, keys)
     if sd is None:
         sd = jax.tree.map(jnp.zeros_like, base)
-    elif isinstance(sd, (int, float)) or (hasattr(sd, "shape") and sd.shape == ()):
+    elif isinstance(sd, (int, float)) or (
+        hasattr(sd, "shape") and sd.shape == ()
+    ):
         sd_scalar = sd
         sd = jax.tree.map(lambda _: sd_scalar, base)
     return jax.tree.map(jitter_leaf, keytree, base, sd)
@@ -155,7 +161,9 @@ def inference_loop(
     all_params = {**tuned_params, **static_params}
     kernel = blackjax.nuts(log_posterior, **all_params).step
 
-    def one_step(state: Any, rng_key: PRNGKeyArray) -> tuple[Any, tuple[Any, Any]]:
+    def one_step(
+        state: Any, rng_key: PRNGKeyArray
+    ) -> tuple[Any, tuple[Any, Any]]:
         state, info = kernel(rng_key, state)
         return state, (state, info)
 
@@ -239,7 +247,9 @@ def run_chain(
         n_warmup,  # type: ignore
     )
     warmup_only = set(warmup_kwargs) - set(sample_kwargs)
-    tuned_params = {k: v for k, v in tuned_params.items() if k not in warmup_only}
+    tuned_params = {
+        k: v for k, v in tuned_params.items() if k not in warmup_only
+    }
     states, info = inference_loop(
         sample_key,
         tuned_params,
