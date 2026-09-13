@@ -119,6 +119,45 @@ both stages and the NUTS kernel would raise `TypeError`. These are:
 Kernel parameters given only to warmup stay there: `warmup_options=dict(max_num_doublings=1)`
 leaves sampling on the blackjax default rather than carrying the value over.
 
+### Using another sampler
+
+`run_nuts` is an alias for `run_sampler`, which builds its warmup and its
+sampling kernel through a `sampler` argument: a `Sampler` pair of factories,
+defaulting to `NUTS`. Replace it and the same multi-chain, jittering,
+flattening machinery runs a different sampler:
+
+```python
+Sampler(make_warmup, make_kernel)
+
+make_warmup(density, **warmup_kwargs)  # -> .run(key, position, num_steps)
+make_kernel(density, **params)         # -> step(key, state) -> (state, info)
+```
+
+`make_warmup`'s return must yield `((state, tuned_params), info)`, and
+`make_kernel` receives the tuned parameters merged with the static ones. The
+target density is called with whatever keyword arguments the sampler passes it,
+so a sampler that threads extra state through the density — as
+[grapevine](https://github.com/dtu-qmcm/grapevine) does with its guess — works
+without blackjax-utils knowing anything about it:
+
+```python
+from blackjax_utils import run_sampler
+from grapevine import grapenuts
+
+states, info = run_sampler(
+    key=key,
+    log_posterior=log_density,     # (position, guess) -> (log_density, solution)
+    init_params=init_params,
+    n_chain=4,
+    sampler=grapenuts(default_guess),
+)
+```
+
+Bind anything algorithm-specific into those two factories yourself, with
+`functools.partial`, rather than passing it through `warmup_kwargs`: warmup
+echoes its extra arguments back in `tuned_params`, which then reach the kernel
+as per-step parameters.
+
 ## Performance
 
 blackjax-utils follows the
