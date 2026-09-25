@@ -1,3 +1,4 @@
+import math
 from functools import partial
 from typing import Any, Callable, NamedTuple
 
@@ -5,6 +6,7 @@ import blackjax
 import jax
 from jax import numpy as jnp
 from jax.flatten_util import ravel_pytree
+from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import PRNGKeyArray, PyTree
 
 
@@ -297,12 +299,36 @@ def run_chain(
     return states, info
 
 
+def _shard_chains(func: Callable, n_chain: int) -> Callable:
+    """Map func over chains, sharing evenly between the available devices.
+
+    Chains on the same device are vmapped; in the case where there is 1 device
+    this is the same as plain vmap.
+
+    check_vma is off due to a diffrax/JAX clash: see
+    https://github.com/patrick-kidger/diffrax/issues/735
+    """
+    n_device = math.gcd(n_chain, jax.device_count())
+    if n_device == 1:
+        return jax.vmap(func)
+    mesh = Mesh(jax.devices()[:n_device], axis_names=("chain",))
+    return jax.jit(
+        jax.shard_map(
+            jax.vmap(func),
+            mesh=mesh,
+            in_specs=(PartitionSpec("chain"), PartitionSpec("chain")),
+            out_specs=PartitionSpec("chain"),
+            check_vma=False,
+        )
+    )
+
+
 def make_sampler_runner(
     log_posterior: Callable,
     n_chain: int = 4,
     n_warmup: int = 500,
     n_sample: int = 500,
-    chain_map: Callable = jax.vmap,
+    chain_map: Callable | None = None,
     sampling_options: dict[str, Any] | None = None,
     warmup_options: dict[str, Any] | None = None,
     flatten: bool = True,
@@ -342,11 +368,7 @@ def make_sampler_runner(
     warmup_kwargs: dict[str, Any] = {**kwargs, **(warmup_options or {})}
     sample_kwargs: dict[str, Any] = {**kwargs, **(sampling_options or {})}
 
-    # jit goes inside chain_map so that warmup and sampling compile as a single
-    # cached XLA computation per chain, and so the same placement is correct for
-    # vmap, pmap and shard_map alike (jit-of-pmap is discouraged).  Every
-    # non-array argument is bound by the partial, so the jitted callable takes
-    # only the two traced arguments and needs no static_argnums.
+    # jit goes inside chain_map so that compilation still happens when a chain map calls func from plain Python, such as when running one thread per device.
     run_this_chain = jax.jit(
         partial(
             run_chain,
@@ -359,7 +381,10 @@ def make_sampler_runner(
             **sample_kwargs,
         )
     )
-    run_these_chains = chain_map(run_this_chain, in_axes=(0, 0))
+    if chain_map is None:
+        run_these_chains = _shard_chains(run_this_chain, n_chain)
+    else:
+        run_these_chains = chain_map(run_this_chain, in_axes=(0, 0))
     jitter_chains = jax.vmap(get_init_params, in_axes=(0, None, None))
 
     def sample(
@@ -384,7 +409,7 @@ def run_sampler(
     n_chain: int = 4,
     n_warmup: int = 500,
     n_sample: int = 500,
-    chain_map: Callable = jax.vmap,
+    chain_map: Callable | None = None,
     sampling_options: dict[str, Any] | None = None,
     warmup_options: dict[str, Any] | None = None,
     flatten: bool = True,
@@ -408,10 +433,6 @@ def run_sampler(
         n_sample: Number of sampling steps per chain.
         chain_map: A callable with the same interface as ``jax.vmap`` / ``jax.pmap``
             (i.e. ``chain_map(func, in_axes=...)`` returns a vectorized function).
-            Defaults to ``jax.vmap`` for single-device vectorization. Pass
-            ``jax.pmap`` for multi-device SPMD parallelism, or a
-            ``jax.experimental.shard_map.shard_map`` partial for explicit
-            sharding control.
         sampling_options: Optional dictionary of keyword arguments forwarded
             to the NUTS kernel during sampling. When provided, these values
             are added to, and override, the corresponding ``**kwargs`` for the

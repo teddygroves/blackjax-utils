@@ -1,3 +1,4 @@
+import math
 from functools import partial
 from typing import Any, NamedTuple
 
@@ -7,6 +8,7 @@ import jax.numpy as jnp
 import pytest
 from blackjax_utils.mcmc import (
     _flatten_position,
+    _shard_chains,
     _unflatten_info,
     _unflatten_state,
     get_init_params,
@@ -109,7 +111,7 @@ def test_get_init_params_jitter():
 
 @pytest.mark.parametrize("flatten", [True, False])
 def test_run_nuts_vmap(flatten):
-    """Explicit vmap chain mapping (the default)."""
+    """Explicit vmap chain mapping."""
     key = jax.random.PRNGKey(2)
     init_params = {"x": jnp.array([10.0])}
 
@@ -559,6 +561,36 @@ def test_run_nuts_shard_map_subset_devices():
     assert jnp.abs(std - 1.0) < 0.2
 
 
+@pytest.mark.parametrize("n_chain", [1, 4, 5, 6, 8])
+def test_shard_chains_uses_largest_even_split(n_chain):
+    keys = jax.random.split(jax.random.PRNGKey(0), n_chain)
+    params = {"x": jnp.arange(n_chain, dtype=jnp.float32)}
+
+    def double(key, params):
+        return jax.tree.map(lambda x: 2 * x, params)
+
+    got = _shard_chains(double, n_chain)(keys, params)["x"]
+    n_device = math.gcd(n_chain, jax.device_count())
+    assert len(got.sharding.device_set) == n_device
+    assert jnp.array_equal(got, 2 * params["x"])
+
+
+def test_run_nuts_default_chain_map_matches_vmap():
+    kwargs = dict(
+        key=jax.random.PRNGKey(5),
+        log_posterior=log_density_fn,
+        init_params={"x": jnp.array([10.0])},
+        init_sd=1.0,
+        n_chain=4,
+        n_warmup=20,
+        n_sample=20,
+        max_num_doublings=3,
+    )
+    default, _ = run_nuts(**kwargs)
+    vmapped, _ = run_nuts(chain_map=jax.vmap, **kwargs)
+    assert jnp.allclose(default.position["x"], vmapped.position["x"], atol=1e-3)
+
+
 def test_run_sampler_default_hooks_match_run_nuts():
     """The default hooks reproduce the previous NUTS path exactly."""
     key = jax.random.PRNGKey(7)
@@ -572,7 +604,9 @@ def test_run_sampler_default_hooks_match_run_nuts():
         n_sample=200,
     )
     expected, _ = run_nuts(key=key, **kwargs)
-    actual, _ = run_sampler(key=key, sampler=Sampler(nuts_warmup, nuts_kernel), **kwargs)
+    actual, _ = run_sampler(
+        key=key, sampler=Sampler(nuts_warmup, nuts_kernel), **kwargs
+    )
     assert jnp.array_equal(actual.position["x"], expected.position["x"])
 
 
