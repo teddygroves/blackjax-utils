@@ -1,6 +1,6 @@
 [project]
 name = "blackjax-utils"
-version = "0.2.0"
+version = "0.2.1"
 description = "Functions for running MCMC with blackJAX"
 readme = "README.md"
 authors = [
