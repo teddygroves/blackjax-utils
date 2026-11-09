@@ -561,6 +561,25 @@ def test_run_nuts_shard_map_subset_devices():
     assert jnp.abs(std - 1.0) < 0.2
 
 
+@pytest.mark.skipif(
+    jax.local_device_count() < 4,
+    reason="Requires ≥ 4 CPU devices (set JAX_NUM_CPU_DEVICES=4)",
+)
+def test_run_nuts_returns_finished_arrays():
+    """The draws are computed by the time run_nuts returns."""
+    states, info = run_nuts(
+        key=jax.random.PRNGKey(6),
+        log_posterior=log_density_fn,
+        init_params={"x": jnp.array([10.0])},
+        init_sd=1.0,
+        n_chain=4,
+        n_warmup=2000,
+        n_sample=2000,
+        max_num_doublings=5,
+    )
+    assert all(leaf.is_ready() for leaf in jax.tree.leaves((states, info)))
+
+
 @pytest.mark.parametrize("n_chain", [1, 4, 5, 6, 8])
 def test_shard_chains_uses_largest_even_split(n_chain):
     keys = jax.random.split(jax.random.PRNGKey(0), n_chain)

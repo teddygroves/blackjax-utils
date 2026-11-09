@@ -396,7 +396,9 @@ def make_sampler_runner(
         init_keys = jax.random.split(key1, n_chain)
         sample_keys = jax.random.split(key2, n_chain)
         chain_init_params = jitter_chains(init_keys, init_params, init_sd)
-        return run_these_chains(sample_keys, chain_init_params)
+        return jax.block_until_ready(
+            run_these_chains(sample_keys, chain_init_params)
+        )
 
     return sample
 
