@@ -263,8 +263,8 @@ BENCH_N_LEAVES=16 BENCH_N_CHAIN=8 uv run pytest tests/test_benchmarks.py --bench
 Clone and install with dev dependencies:
 
 ```bash
-git clone https://github.com/teddygroves/blackjax-utils.git
-cd blackjax-utils
+git clone https://github.com/teddygroves/teddys-blackjax-utils.git
+cd teddys-blackjax-utils
 uv sync
 ```
 
