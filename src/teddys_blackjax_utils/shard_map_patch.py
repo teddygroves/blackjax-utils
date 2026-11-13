@@ -57,7 +57,7 @@ def patch_for_shard_map() -> None:
         installed = import_module(module_name).__version__
         if installed != version:
             raise RuntimeError(
-                f"blackjax-utils' shard_map patch targets {module_name} "
+                f"teddys-blackjax-utils' shard_map patch targets {module_name} "
                 f"{version}, but {installed} is installed.",
             )
     for module, function_name in get_patched_functions():

@@ -1,4 +1,4 @@
-from blackjax_utils.mcmc import (
+from teddys_blackjax_utils.mcmc import (
     NUTS,
     Sampler,
     get_init_params,
@@ -11,7 +11,7 @@ from blackjax_utils.mcmc import (
     run_nuts,
     run_sampler,
 )
-from blackjax_utils.shard_map_patch import patch_for_shard_map
+from teddys_blackjax_utils.shard_map_patch import patch_for_shard_map
 
 __all__ = [
     "NUTS",

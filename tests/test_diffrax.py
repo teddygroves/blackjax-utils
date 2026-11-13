@@ -11,8 +11,8 @@ See `test_diffrax_pmap_default_adjoint_fails` for the precise cause.
 import jax
 import jax.numpy as jnp
 import pytest
-from blackjax_utils import run_nuts
-from blackjax_utils.mcmc import SHARD_MAP_HINT
+from teddys_blackjax_utils import run_nuts
+from teddys_blackjax_utils.mcmc import SHARD_MAP_HINT
 
 diffrax = pytest.importorskip("diffrax")
 
@@ -116,7 +116,7 @@ def test_diffrax_pmap_default_adjoint_fails():
     re-traced with different abstract values than the ones the conversion was
     built from, and the rule rejects them.
 
-    This is an equinox/diffrax limitation, not a blackjax-utils one: plain
+    This is an equinox/diffrax limitation, not a teddys-blackjax-utils one: plain
     `jax.pmap(jax.grad(...))` over such a loop fails identically, with no
     blackjax involved. The test pins the failure so that a fix upstream shows
     up here as an unexpected pass rather than going unnoticed.
