@@ -6,7 +6,7 @@ import blackjax
 import jax
 import jax.numpy as jnp
 import pytest
-from blackjax_utils.mcmc import (
+from teddys_blackjax_utils.mcmc import (
     _flatten_position,
     _shard_chains,
     _unflatten_info,

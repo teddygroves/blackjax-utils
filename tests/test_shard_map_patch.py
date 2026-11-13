@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from blackjax_utils import patch_for_shard_map
+from teddys_blackjax_utils import patch_for_shard_map
 from jax.sharding import Mesh, PartitionSpec
 
 diffrax = pytest.importorskip("diffrax")

@@ -20,7 +20,7 @@ import os
 import jax
 import jax.numpy as jnp
 import pytest
-from blackjax_utils import make_nuts_runner, run_nuts
+from teddys_blackjax_utils import make_nuts_runner, run_nuts
 
 
 def _env_int(name: str, default: int) -> int:

@@ -13,7 +13,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 SHARD_MAP_HINT = (
     "This error can come from differentiating an equinox or lineax loop under "
     "shard_map. If the model uses equinox, lineax, diffrax or optimistix, "
-    "call blackjax_utils.patch_for_shard_map() before sampling, or pass "
+    "call teddys_blackjax_utils.patch_for_shard_map() before sampling, or pass "
     "chain_map=jax.vmap to run every chain on one device."
 )
 

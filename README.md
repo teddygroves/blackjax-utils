@@ -1,4 +1,4 @@
-# blackjax-utils
+# teddys-blackjax-utils
 
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
@@ -11,7 +11,7 @@ This approach is nice, in my opinion, as you don't have to learn a specialised p
 
 ## Installation
 
-blackjax-utils isn't on PyPI, so install it from GitHub:
+teddys-blackjax-utils isn't on PyPI, so install it from GitHub:
 
 ```bash
 pip install git+https://github.com/teddygroves/blackjax-utils.git
@@ -28,7 +28,7 @@ uv add git+https://github.com/teddygroves/blackjax-utils.git
 ```python
 import jax
 import jax.numpy as jnp
-from blackjax_utils import run_nuts
+from teddys_blackjax_utils import run_nuts
 
 # Define a log-density to sample from (e.g. a standard normal)
 def log_density(params):
@@ -138,10 +138,10 @@ make_kernel(density, **params)         # -> step(key, state) -> (state, info)
 target density is called with whatever keyword arguments the sampler passes it,
 so a sampler that threads extra state through the density — as
 [grapevine](https://github.com/dtu-qmcm/grapevine) does with its guess — works
-without blackjax-utils knowing anything about it:
+without teddys-blackjax-utils knowing anything about it:
 
 ```python
-from blackjax_utils import run_sampler
+from teddys_blackjax_utils import run_sampler
 from grapevine import grapenuts
 
 states, info = run_sampler(
@@ -160,7 +160,7 @@ as per-step parameters.
 
 ## Performance
 
-blackjax-utils follows the
+teddys-blackjax-utils follows the
 [blackjax speed-up guide](https://blackjax-devs.github.io/blackjax/examples/speed_up_guide.html).
 What it does for you:
 
@@ -198,7 +198,7 @@ always empty and calling it in a loop recompiles every time. To sample the same
 model more than once, build the sampler once with `make_nuts_runner`:
 
 ```python
-from blackjax_utils import make_nuts_runner
+from teddys_blackjax_utils import make_nuts_runner
 
 sample = make_nuts_runner(log_density, n_chain=4, n_warmup=500, n_sample=1000)
 

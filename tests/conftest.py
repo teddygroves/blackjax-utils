@@ -1,5 +1,5 @@
 import pytest
-from blackjax_utils.shard_map_patch import (
+from teddys_blackjax_utils.shard_map_patch import (
     get_patched_functions,
     patch_for_shard_map,
 )
