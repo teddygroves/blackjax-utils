@@ -1,6 +1,6 @@
 # teddys-blackjax-utils
 
-[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
 Functions for running MCMC with [Blackjax](https://blackjax-devs.github.io/blackjax/).
@@ -11,16 +11,14 @@ This approach is nice, in my opinion, as you don't have to learn a specialised p
 
 ## Installation
 
-teddys-blackjax-utils isn't on PyPI, so install it from GitHub:
-
 ```bash
-pip install git+https://github.com/teddygroves/blackjax-utils.git
+pip install teddys-blackjax-utils
 ```
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add git+https://github.com/teddygroves/blackjax-utils.git
+uv add teddys-blackjax-utils
 ```
 
 ## Quick start
