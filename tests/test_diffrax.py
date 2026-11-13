@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from blackjax_utils import run_nuts
+from blackjax_utils.mcmc import SHARD_MAP_HINT
 
 diffrax = pytest.importorskip("diffrax")
 
@@ -133,4 +134,17 @@ def test_diffrax_pmap_default_adjoint_fails():
 def test_diffrax_pmap_works_with_other_adjoints(adjoint):
     """Adjoints that avoid the checkpointed loop parallelise over devices."""
     states, _ = sample(adjoint, jax.pmap)
+    check_draws(states)
+
+
+@requires_4_devices
+def test_diffrax_default_chain_map_fails_with_a_hint():
+    with pytest.raises(ValueError, match="Closure-converted") as raised:
+        sample(diffrax.RecursiveCheckpointAdjoint(), None)
+    assert SHARD_MAP_HINT in raised.value.__notes__
+
+
+@requires_4_devices
+def test_diffrax_default_chain_map_works_when_patched(shard_map_patch):
+    states, _ = sample(diffrax.RecursiveCheckpointAdjoint(), None)
     check_draws(states)

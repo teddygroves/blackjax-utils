@@ -8,6 +8,7 @@ jobs:
     strategy:
       matrix:
         python-version:
+          - "3.12"
           - "3.13"
           - "3.14"
     steps:
@@ -27,5 +28,6 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - name: Run tests
-        # For example, using `pytest`
+        env:
+          JAX_NUM_CPU_DEVICES: 4
         run: uv run pytest tests
