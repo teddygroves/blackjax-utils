@@ -588,8 +588,13 @@ def test_shard_chains_uses_largest_even_split(n_chain):
     def double(key, params):
         return jax.tree.map(lambda x: 2 * x, params)
 
-    got = _shard_chains(double, n_chain)(keys, params)["x"]
     n_device = math.gcd(n_chain, jax.device_count())
+    if n_device < min(n_chain, jax.device_count()):
+        with pytest.warns(UserWarning, match="cannot be shared evenly"):
+            shard_chains = _shard_chains(double, n_chain)
+    else:
+        shard_chains = _shard_chains(double, n_chain)
+    got = shard_chains(keys, params)["x"]
     assert len(got.sharding.device_set) == n_device
     assert jnp.array_equal(got, 2 * params["x"])
 

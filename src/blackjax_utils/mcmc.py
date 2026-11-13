@@ -1,4 +1,5 @@
 import math
+import warnings
 from functools import partial
 from typing import Any, Callable, NamedTuple
 
@@ -8,6 +9,13 @@ from jax import numpy as jnp
 from jax.flatten_util import ravel_pytree
 from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import PRNGKeyArray, PyTree
+
+SHARD_MAP_HINT = (
+    "This error can come from differentiating an equinox or lineax loop under "
+    "shard_map. If the model uses equinox, lineax, diffrax or optimistix, "
+    "call blackjax_utils.patch_for_shard_map() before sampling, or pass "
+    "chain_map=jax.vmap to run every chain on one device."
+)
 
 
 def get_init_params(
@@ -308,7 +316,14 @@ def _shard_chains(func: Callable, n_chain: int) -> Callable:
     check_vma is off due to a diffrax/JAX clash: see
     https://github.com/patrick-kidger/diffrax/issues/735
     """
-    n_device = math.gcd(n_chain, jax.device_count())
+    n_available = jax.device_count()
+    n_device = math.gcd(n_chain, n_available)
+    if n_device < min(n_chain, n_available):
+        warnings.warn(
+            f"{n_chain} chains cannot be shared evenly between {n_available} "
+            f"devices, so they will run on {n_device}.",
+            stacklevel=2,
+        )
     if n_device == 1:
         return jax.vmap(func)
     mesh = Mesh(jax.devices()[:n_device], axis_names=("chain",))
@@ -396,9 +411,14 @@ def make_sampler_runner(
         init_keys = jax.random.split(key1, n_chain)
         sample_keys = jax.random.split(key2, n_chain)
         chain_init_params = jitter_chains(init_keys, init_params, init_sd)
-        return jax.block_until_ready(
-            run_these_chains(sample_keys, chain_init_params)
-        )
+        try:
+            return jax.block_until_ready(
+                run_these_chains(sample_keys, chain_init_params)
+            )
+        except ValueError as error:
+            if chain_map is None and "Closure-converted" in str(error):
+                error.add_note(SHARD_MAP_HINT)
+            raise
 
     return sample
 

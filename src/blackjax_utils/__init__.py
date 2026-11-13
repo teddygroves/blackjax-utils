@@ -11,6 +11,7 @@ from blackjax_utils.mcmc import (
     run_nuts,
     run_sampler,
 )
+from blackjax_utils.shard_map_patch import patch_for_shard_map
 
 __all__ = [
     "NUTS",
@@ -21,6 +22,7 @@ __all__ = [
     "make_sampler_runner",
     "nuts_kernel",
     "nuts_warmup",
+    "patch_for_shard_map",
     "run_chain",
     "run_nuts",
     "run_sampler",
